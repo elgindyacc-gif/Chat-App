@@ -2,18 +2,18 @@
   "name": "Chat App",
   "short_name": "ChatApp",
   "description": "A premium real-time chat application.",
-  "start_url": "/",
+  "start_url": "/Chat-App/",
   "display": "standalone",
   "background_color": "#111b21",
   "theme_color": "#00a884",
   "icons": [
     {
-      "src": "/icon.png",
+      "src": "icon.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/icon.png",
+      "src": "icon.png",
       "sizes": "512x512",
       "type": "image/png"
     }
