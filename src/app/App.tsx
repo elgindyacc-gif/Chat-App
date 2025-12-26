@@ -7,9 +7,9 @@ import { NewChat } from "./components/NewChat";
 import { CreateGroup } from "./components/CreateGroup";
 import { RequestList } from "./components/RequestList";
 import { SplashScreen } from "./components/SplashScreen"; // Import SplashScreen
-import { supabase } from "../../utils/supabase/client";
+import { supabase } from "../utils/supabase/client";
 import { requestForToken } from "./utils/firebase";
-import { projectId, publicAnonKey } from "../../utils/supabase/info";
+import { projectId, publicAnonKey } from "../utils/supabase/info";
 import { toast } from "sonner";
 import { ArrowLeft, Bell, Check, MessageSquare, RefreshCw } from "lucide-react";
 

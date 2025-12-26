@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { ArrowLeft, Search, User, Users } from "lucide-react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
-import { supabase } from "../../../utils/supabase/client";
+import { supabase } from "../../utils/supabase/client";
 
 interface NewChatProps {
   onBack: () => void;
