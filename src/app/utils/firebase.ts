@@ -3,7 +3,7 @@ import { getMessaging, getToken, onMessage } from "firebase/messaging";
 
 // Replace these with actual values from Firebase Console
 const firebaseConfig = {
-    apiKey: "AIzaSyDzhHEabYIbHs3loetP33ixfg49Vr3rs60",
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
     authDomain: "whats-app-ba228.firebaseapp.com",
     projectId: "whats-app-ba228",
     storageBucket: "whats-app-ba228.firebasestorage.app",
