@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MessageCircle, Search, Copy, Check, Bell, X, Users, MessageSquare } from "lucide-react";
+import { Search, UserPlus, Users, LogOut, MessageSquare, Bell, MessageCircle, Copy, Check, X, Settings } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { Input } from "./ui/input";
 import { toast } from "sonner";
@@ -8,6 +8,7 @@ interface Chat {
   id: string; // conversation_id or group_id
   partnerId: string;
   partnerName: string;
+  partnerAvatar?: string;
   lastMessage: string;
   lastMessageTime: string;
   unreadCount: number;
@@ -29,9 +30,13 @@ interface ChatListProps {
   onNewChat: () => void;
   onCreateGroup: () => void;
   onLogout: () => void;
+  onSettings: () => void;
   onAcceptRequest: (requestId: string, senderId: string) => void;
   onRejectRequest: (requestId: string) => void;
   pendingRequests: any[];
+  typingUsers: Record<string, boolean>;
+  onEnableNotifications?: () => void;
+  notificationsEnabled?: boolean;
 }
 
 export function ChatList({
@@ -44,7 +49,11 @@ export function ChatList({
   onLogout,
   onAcceptRequest,
   onRejectRequest,
-  pendingRequests
+  pendingRequests,
+  typingUsers,
+  onEnableNotifications,
+  notificationsEnabled,
+  onSettings
 }: ChatListProps) {
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -79,6 +88,13 @@ export function ChatList({
           <h1 className="text-white text-xl font-bold">Chats</h1>
           <div className="flex items-center gap-3">
             <button
+              onClick={onSettings}
+              className="text-gray-400 hover:text-white transition-colors"
+              title="Settings"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+            <button
               onClick={onCreateGroup}
               className="text-gray-400 hover:text-white transition-colors"
               title="Create Group"
@@ -112,7 +128,7 @@ export function ChatList({
             <AvatarFallback className="bg-[#00a884] text-white">
               {currentUser.name.charAt(0).toUpperCase()}
             </AvatarFallback>
-          </Avatar>
+          </Avatar >
           <div className="flex-1 min-w-0">
             <p className="text-white font-bold truncate">{currentUser.name}</p>
             <div className="flex items-center gap-2">
@@ -128,7 +144,8 @@ export function ChatList({
               </button>
             </div>
           </div>
-        </div>
+        </div >
+
 
         {/* Search */}
         <div className="relative">
@@ -141,40 +158,42 @@ export function ChatList({
             className="pl-10 bg-[#2a3942] border-none text-white placeholder:text-gray-400 h-9"
           />
         </div>
-      </div>
+      </div >
 
       {/* Pending Requests */}
-      {pendingRequests.length > 0 && (
-        <div className="p-2 bg-[#202c33] border-t border-gray-800">
-          <div className="flex items-center gap-2 px-2 py-1 text-[#00a884] text-xs font-bold uppercase tracking-wider mb-2">
-            <Bell className="w-3 h-3" />
-            <span>Chat Requests</span>
-          </div>
-          <div className="space-y-1">
-            {pendingRequests.map((req) => (
-              <div key={req.id} className="bg-[#111b21] p-3 rounded-lg border border-gray-800">
-                <p className="text-white text-sm mb-2 font-medium">
-                  <span className="text-[#00a884]">@{req.profiles?.username}</span> want to chat
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => onAcceptRequest(req.id, req.sender_id)}
-                    className="flex-1 bg-[#00a884] hover:bg-[#06cf9c] text-[#111b21] py-1.5 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1"
-                  >
-                    <Check className="w-3 h-3" /> Accept
-                  </button>
-                  <button
-                    onClick={() => onRejectRequest(req.id)}
-                    className="flex-1 bg-transparent hover:bg-red-500/10 text-red-500 py-1.5 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1 border border-red-500/50"
-                  >
-                    <X className="w-3 h-3" /> Ignore
-                  </button>
+      {
+        pendingRequests.length > 0 && (
+          <div className="p-2 bg-[#202c33] border-t border-gray-800">
+            <div className="flex items-center gap-2 px-2 py-1 text-[#00a884] text-xs font-bold uppercase tracking-wider mb-2">
+              <Bell className="w-3 h-3" />
+              <span>Chat Requests</span>
+            </div>
+            <div className="space-y-1">
+              {pendingRequests.map((req) => (
+                <div key={req.id} className="bg-[#111b21] p-3 rounded-lg border border-gray-800">
+                  <p className="text-white text-sm mb-2 font-medium">
+                    <span className="text-[#00a884]">@{req.profiles?.username}</span> want to chat
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onAcceptRequest(req.id, req.sender_id)}
+                      className="flex-1 bg-[#00a884] hover:bg-[#06cf9c] text-[#111b21] py-1.5 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1"
+                    >
+                      <Check className="w-3 h-3" /> Accept
+                    </button>
+                    <button
+                      onClick={() => onRejectRequest(req.id)}
+                      className="flex-1 bg-transparent hover:bg-red-500/10 text-red-500 py-1.5 rounded-md text-xs font-bold transition-colors flex items-center justify-center gap-1 border border-red-500/50"
+                    >
+                      <X className="w-3 h-3" /> Ignore
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      }
 
       {/* Chat List */}
       <div className="flex-1 overflow-y-auto chat-list-scrollbar">
@@ -193,7 +212,7 @@ export function ChatList({
             >
               <div className="relative flex-shrink-0">
                 <Avatar className="w-12 h-12 border border-gray-800">
-                  <AvatarImage src={`https://ui-avatars.com/api/?name=${encodeURIComponent(chat.partnerName)}&background=2a3942&color=00a884`} />
+                  <AvatarImage src={chat.partnerAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(chat.partnerName)}&background=2a3942&color=00a884`} />
                   <AvatarFallback className="bg-[#2a3942] text-[#00a884] font-bold">
                     {chat.partnerName.charAt(0).toUpperCase()}
                   </AvatarFallback>
@@ -209,16 +228,30 @@ export function ChatList({
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex justify-between items-baseline mb-0.5">
-                  <h3 className="text-white font-medium truncate group-hover:text-[#00a884] transition-colors">
+                  <h3 className={`font-medium truncate transition-colors ${chat.unreadCount > 0 ? "text-white font-bold" : "text-gray-300 group-hover:text-white"}`}>
                     {chat.partnerName}
                   </h3>
-                  <span className="text-[10px] text-gray-500 flex-shrink-0">
+                  <span className={`text-[10px] flex-shrink-0 ${chat.unreadCount > 0 ? "text-[#00a884] font-bold" : "text-gray-500"}`}>
                     {formatTime(chat.lastMessageTime)}
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <p className="text-gray-400 text-sm truncate pr-4">
-                    {chat.lastMessage || "Start a conversation"}
+                  <p className={`text-sm truncate pr-4 ${typingUsers[chat.partnerId] ? "text-[#00a884] font-bold" : (chat.unreadCount > 0 ? "text-white font-medium" : "text-gray-500")}`}>
+                    {typingUsers[chat.partnerId] ? (
+                      <span className="flex items-center gap-1">
+                        typing
+                        <span className="flex gap-0.5 mt-1">
+                          <span className="w-0.5 h-0.5 bg-[#00a884] rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                          <span className="w-0.5 h-0.5 bg-[#00a884] rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                          <span className="w-0.5 h-0.5 bg-[#00a884] rounded-full animate-bounce"></span>
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1">
+                        {chat.unreadCount > 0 && <span className="w-1.5 h-1.5 bg-[#00a884] rounded-full flex-shrink-0 mr-1 animate-pulse"></span>}
+                        {chat.lastMessage || "Start a conversation"}
+                      </span>
+                    )}
                   </p>
                   {chat.unreadCount > 0 && (
                     <span className="bg-[#00a884] text-[#111b21] text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 flex-shrink-0">
@@ -231,6 +264,6 @@ export function ChatList({
           ))
         )}
       </div>
-    </div>
+    </div >
   );
 }

@@ -26,8 +26,8 @@ export function ChatRegister({ onRegister, onBackToLogin }: ChatRegisterProps) {
             return;
         }
 
-        if (password.length < 6) {
-            setError("Password must be at least 6 characters");
+        if (password.length !== 6) {
+            setError("PIN must be exactly 6 digits");
             return;
         }
 

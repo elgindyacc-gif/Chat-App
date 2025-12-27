@@ -29,8 +29,8 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
   const [isSending, setIsSending] = useState(false);
 
   const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
     const cleanedSearch = searchQuery.trim().toLowerCase().replace(searchType === 'user' ? '@' : '#', '');
-    if (!cleanedSearch) return;
 
     setIsSearching(true);
     setNotFound(false);
@@ -38,8 +38,7 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
 
     try {
       if (searchType === "user") {
-        // --- 1. User Search Logic (Existing) ---
-        const { data: user, error } = await supabase
+        const { data: user } = await supabase
           .from("profiles")
           .select("id, display_name, username")
           .eq("username", cleanedSearch)
@@ -51,7 +50,6 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
             return;
           }
 
-          // Check existing chats
           const { data: partnerConvs } = await supabase
             .from("conversation_participants")
             .select("conversation_id")
@@ -69,7 +67,6 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
             hasChat = !!existingChat;
           }
 
-          // Check requests
           const { data: existingRequest } = await supabase
             .from("chat_requests")
             .select("status, sender_id")
@@ -88,15 +85,13 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
           setNotFound(true);
         }
       } else {
-        // --- 2. Group Search Logic (New) ---
-        const { data: group, error } = await supabase
+        const { data: group } = await supabase
           .from("groups")
           .select("id, name, group_id, description")
           .eq("group_id", cleanedSearch)
           .maybeSingle();
 
         if (group) {
-          // Check if already a member
           const { data: membership } = await supabase
             .from("group_members")
             .select("id")
@@ -128,7 +123,6 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
     setIsSending(true);
 
     try {
-      // Use upsert to overwrite any existing 'rejected' request for this pair
       const { error } = await supabase
         .from("chat_requests")
         .upsert({
@@ -139,17 +133,7 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
           onConflict: 'sender_id,receiver_id'
         });
 
-      if (error) {
-        // Fallback
-        const { error: insertErr } = await supabase
-          .from("chat_requests")
-          .insert({
-            sender_id: currentUserId,
-            receiver_id: searchResult.id,
-            status: "pending"
-          });
-        if (insertErr) throw insertErr;
-      }
+      if (error) throw error;
 
       toast.success("Request sent successfully!");
       setSearchResult(prev => prev ? { ...prev, requestStatus: 'pending', requestSenderId: currentUserId } : null);
@@ -186,36 +170,42 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-[#111b21]">
-      {/* Header */}
+    <div className="flex flex-col h-[100dvh] bg-[#111b21] overflow-hidden">
       <div className="bg-[#202c33] px-4 py-3 flex items-center gap-3">
-        <button
-          onClick={onBack}
-          className="text-gray-400 hover:text-white transition-colors"
-        >
+        <button onClick={onBack} className="text-gray-400 hover:text-white transition-colors">
           <ArrowLeft className="w-6 h-6" />
         </button>
         <h2 className="text-white text-xl">New Chat / Join Group</h2>
       </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-gray-800">
+      <div className="flex border-b border-gray-800 relative z-10">
         <button
-          onClick={() => { setSearchType("user"); setSearchResult(null); setNotFound(false); setSearchQuery(""); }}
-          className={`flex-1 py-3 text-sm font-medium transition-colors ${searchType === "user" ? "text-[#00a884] border-b-2 border-[#00a884]" : "text-gray-400 hover:text-white"}`}
+          type="button"
+          onClick={() => {
+            setSearchType("user");
+            setSearchResult(null);
+            setNotFound(false);
+            setSearchQuery("");
+          }}
+          className={`flex-1 py-4 text-sm font-bold transition-colors ${searchType === "user" ? "text-[#00a884] border-b-2 border-[#00a884]" : "text-gray-400 hover:text-white"}`}
         >
           Find User
         </button>
         <button
-          onClick={() => { setSearchType("group"); setSearchResult(null); setNotFound(false); setSearchQuery(""); }}
-          className={`flex-1 py-3 text-sm font-medium transition-colors ${searchType === "group" ? "text-[#00a884] border-b-2 border-[#00a884]" : "text-gray-400 hover:text-white"}`}
+          type="button"
+          onClick={() => {
+            setSearchType("group");
+            setSearchResult(null);
+            setNotFound(false);
+            setSearchQuery("");
+          }}
+          className={`flex-1 py-4 text-sm font-bold transition-colors ${searchType === "group" ? "text-[#00a884] border-b-2 border-[#00a884]" : "text-gray-400 hover:text-white"}`}
         >
           Find Group
         </button>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 px-4 py-6">
+      <div className="flex-1 px-4 py-6 overflow-y-auto">
         <div className="max-w-md mx-auto">
           <p className="text-gray-400 mb-4">
             {searchType === "user"
@@ -223,13 +213,23 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
               : "Search for groups by their Group ID (e.g. #developers)"}
           </p>
 
-          <div className="flex gap-2 mb-6">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSearch();
+            }}
+            className="flex gap-2 mb-6 relative z-50"
+          >
             <div className="relative flex-1 font-bold">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#00a884] font-bold">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#00a884] font-bold pointer-events-none">
                 {searchType === "user" ? "@" : "#"}
               </span>
               <Input
                 type="text"
+                inputMode="search"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck="false"
                 placeholder={searchType === "user" ? "username" : "group-id"}
                 value={searchQuery}
                 onChange={(e) => {
@@ -237,37 +237,29 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
                   setNotFound(false);
                   setSearchResult(null);
                 }}
-                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                className="pl-8 bg-[#2a3942] border-none text-white placeholder:text-gray-500 h-12"
+                className="pl-8 bg-[#2a3942] border-none text-white placeholder:text-gray-500 h-12 text-base"
               />
             </div>
-            <Button
-              onClick={handleSearch}
+            <button
+              type="submit"
               disabled={isSearching || !searchQuery.trim()}
-              className="bg-[#00a884] hover:bg-[#00956f] text-white h-12 px-6"
+              className="bg-[#00a884] hover:bg-[#00956f] active:bg-[#007a60] text-white h-12 px-6 rounded-md flex items-center justify-center transition-all"
             >
-              <Search className="w-5 h-5" />
-            </Button>
-          </div>
+              <Search className="w-6 h-6 pointer-events-none" />
+            </button>
+          </form>
 
-          {/* Search Results */}
-          {isSearching && (
-            <div className="text-center text-gray-400 py-8">
-              Searching...
-            </div>
-          )}
+          {isSearching && <div className="text-center text-gray-400 py-8">Searching...</div>}
 
           {notFound && (
             <div className="bg-[#202c33] rounded-lg p-4 text-center">
               <p className="text-gray-400">{searchType === "user" ? "User" : "Group"} not found</p>
-              <p className="text-gray-500 text-sm mt-2">
-                Make sure the ID is correct
-              </p>
+              <p className="text-gray-500 text-sm mt-2">Make sure the ID is correct</p>
             </div>
           )}
 
           {searchResult && (
-            <div className="bg-[#202c33] rounded-lg p-4">
+            <div className="bg-[#202c33] rounded-lg p-4 animate-in fade-in zoom-in duration-200">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="text-white text-lg font-bold">{searchResult.name}</p>
@@ -278,13 +270,12 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
                     <p className="text-gray-400 text-sm mt-1">{searchResult.description}</p>
                   )}
                 </div>
-                <div className="w-12 h-12 bg-[#00a884] rounded-full flex items-center justify-center text-white text-xl font-bold shadow-lg">
-                  {searchType === "user" ? <User /> : <Users />}
+                <div className="w-12 h-12 bg-[#00a884] rounded-full flex items-center justify-center text-white">
+                  {searchType === "user" ? <User className="w-6 h-6" /> : <Users className="w-6 h-6" />}
                 </div>
               </div>
 
               {searchType === "user" ? (
-                // --- User Actions ---
                 searchResult.hasChat ? (
                   <p className="text-[#00a884] text-center py-2 text-sm font-medium">You already have a chat with this user</p>
                 ) : searchResult.requestStatus === "pending" ? (
@@ -294,28 +285,24 @@ export function NewChat({ onBack, currentUserId }: NewChatProps) {
                         ? "Request already pending"
                         : "Sent you a request!"}
                     </p>
-                    {searchResult.requestSenderId !== currentUserId && (
-                      <p className="text-gray-500 text-[10px] mt-1">Check your notifications to accept</p>
-                    )}
                   </div>
                 ) : (
                   <Button
                     onClick={handleSendRequest}
                     disabled={isSending}
-                    className="w-full bg-[#00a884] hover:bg-[#00956f] text-white"
+                    className="w-full bg-[#00a884] hover:bg-[#00956f] text-white font-bold"
                   >
-                    {isSending ? "Sending..." : searchResult.requestStatus === "rejected" ? "Resend Request" : "Send Chat Request"}
+                    {isSending ? "Sending..." : "Send Chat Request"}
                   </Button>
                 )
               ) : (
-                // --- Group Actions ---
                 searchResult.isMember ? (
                   <p className="text-[#00a884] text-center py-2 text-sm font-medium">You are already a member</p>
                 ) : (
                   <Button
                     onClick={handleJoinGroup}
                     disabled={isSending}
-                    className="w-full bg-[#00a884] hover:bg-[#00956f] text-white"
+                    className="w-full bg-[#00a884] hover:bg-[#00956f] text-white font-bold"
                   >
                     {isSending ? "Joining..." : "Join Group"}
                   </Button>

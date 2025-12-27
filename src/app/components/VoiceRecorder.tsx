@@ -11,34 +11,81 @@ export function VoiceRecorder({ onSend, onCancel }: VoiceRecorderProps) {
     const [isRecording, setIsRecording] = useState(false);
     const [duration, setDuration] = useState(0);
     const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+    const [isPlayingPreview, setIsPlayingPreview] = useState(false);
+    const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const chunksRef = useRef<Blob[]>([]);
     const timerRef = useRef<NodeJS.Timeout | null>(null);
 
+    const [audioData, setAudioData] = useState<number[]>(new Array(20).fill(0));
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const analyzerRef = useRef<AnalyserNode | null>(null);
+    const animationFrameRef = useRef<number | null>(null);
+
     const startRecording = async () => {
         try {
-            // Check if getUserMedia is supported
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                alert("Your browser doesn't support audio recording. Please use Chrome, Firefox, or Edge.");
+                alert("Microphone access is blocked! 🚫\n\nThis feature requires a Secure Connection (HTTPS) or Localhost.\n\nIf testing on phone via IP, this will NOT work.");
                 return;
             }
 
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                    sampleRate: 48000
+                }
+            });
+
+            // Set up real visualizer
+            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const source = audioCtx.createMediaStreamSource(stream);
+            const analyzer = audioCtx.createAnalyser();
+            analyzer.fftSize = 64;
+            source.connect(analyzer);
+
+            audioContextRef.current = audioCtx;
+            analyzerRef.current = analyzer;
+
+            const bufferLength = analyzer.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+
+            const updateVisualizer = () => {
+                if (!analyzerRef.current) return;
+                analyzerRef.current.getByteFrequencyData(dataArray);
+
+                // Convert to a smaller array for the UI (20 bars)
+                const simplifiedData = [];
+                const step = Math.floor(bufferLength / 20);
+                for (let i = 0; i < 20; i++) {
+                    simplifiedData.push(dataArray[i * step] || 0);
+                }
+                setAudioData(simplifiedData);
+                animationFrameRef.current = requestAnimationFrame(updateVisualizer);
+            };
+            updateVisualizer();
 
             // Determine supported MIME type
-            let options = {};
-            if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-                options = { mimeType: 'audio/webm;codecs=opus' };
-            } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-                options = { mimeType: 'audio/mp4' };
-            } else if (MediaRecorder.isTypeSupported('audio/aac')) {
-                options = { mimeType: 'audio/aac' };
+            let options: MediaRecorderOptions = {
+                audioBitsPerSecond: 256000 // 256kbps for premium quality
+            };
+            const types = [
+                'audio/webm;codecs=opus',
+                'audio/webm',
+                'audio/mp4',
+                'audio/aac',
+            ];
+
+            for (const type of types) {
+                if (MediaRecorder.isTypeSupported(type)) {
+                    options.mimeType = type;
+                    break;
+                }
             }
-            // If none match, let browser choose default (pass empty or don't pass mimeType)
 
             const mediaRecorder = new MediaRecorder(stream, options);
-
             mediaRecorderRef.current = mediaRecorder;
             chunksRef.current = [];
 
@@ -49,17 +96,22 @@ export function VoiceRecorder({ onSend, onCancel }: VoiceRecorderProps) {
             };
 
             mediaRecorder.onstop = () => {
-                const type = (options as any).mimeType || 'audio/webm'; // Fallback for blob type
+                const type = mediaRecorder.mimeType || options.mimeType || 'audio/webm';
                 const blob = new Blob(chunksRef.current, { type });
                 setAudioBlob(blob);
                 stream.getTracks().forEach(track => track.stop());
+
+                // Stop visualizer
+                if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+                if (audioContextRef.current) audioContextRef.current.close();
+                audioContextRef.current = null;
+                analyzerRef.current = null;
             };
 
             mediaRecorder.start();
             setIsRecording(true);
             setDuration(0);
 
-            // Start timer
             timerRef.current = setInterval(() => {
                 setDuration(d => d + 1);
             }, 1000);
@@ -96,6 +148,8 @@ export function VoiceRecorder({ onSend, onCancel }: VoiceRecorderProps) {
         if (isRecording) {
             stopRecording();
         }
+        if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+        if (audioContextRef.current) audioContextRef.current.close();
         setAudioBlob(null);
         setDuration(0);
         onCancel();
@@ -109,11 +163,30 @@ export function VoiceRecorder({ onSend, onCancel }: VoiceRecorderProps) {
 
     useEffect(() => {
         return () => {
-            if (timerRef.current) {
-                clearInterval(timerRef.current);
-            }
+            if (timerRef.current) clearInterval(timerRef.current);
+            if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+            if (audioContextRef.current) audioContextRef.current.close();
+            if (previewAudioRef.current) previewAudioRef.current.pause();
         };
     }, []);
+
+    const togglePreview = () => {
+        if (!audioBlob) return;
+
+        if (!previewAudioRef.current) {
+            const url = URL.createObjectURL(audioBlob);
+            previewAudioRef.current = new Audio(url);
+            previewAudioRef.current.onended = () => setIsPlayingPreview(false);
+        }
+
+        if (isPlayingPreview) {
+            previewAudioRef.current.pause();
+            setIsPlayingPreview(false);
+        } else {
+            previewAudioRef.current.play();
+            setIsPlayingPreview(true);
+        }
+    };
 
     return (
         <div className="flex items-center gap-3 p-3 bg-[#202c33] rounded-lg border border-gray-700">
@@ -136,13 +209,13 @@ export function VoiceRecorder({ onSend, onCancel }: VoiceRecorderProps) {
                                 <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
                                 <span className="text-white font-mono text-sm">{formatDuration(duration)}</span>
                                 <div className="flex-1 h-8 flex items-center gap-1">
-                                    {[...Array(20)].map((_, i) => (
+                                    {audioData.map((val, i) => (
                                         <div
                                             key={i}
-                                            className="flex-1 bg-[#00a884] rounded-full transition-all"
+                                            className="flex-1 bg-[#00a884] rounded-full transition-all duration-75"
                                             style={{
-                                                height: `${Math.random() * 100}%`,
-                                                opacity: 0.3 + Math.random() * 0.7
+                                                height: `${Math.max(10, (val / 255) * 100)}%`,
+                                                opacity: 0.5 + (val / 255) * 0.5
                                             }}
                                         />
                                     ))}
@@ -164,31 +237,40 @@ export function VoiceRecorder({ onSend, onCancel }: VoiceRecorderProps) {
                 </>
             ) : (
                 <>
-                    <div className="w-10 h-10 bg-[#00a884] rounded-full flex items-center justify-center">
-                        <Mic className="w-5 h-5 text-white" />
+                    <div
+                        onClick={togglePreview}
+                        className="w-10 h-10 bg-[#00a884] rounded-full flex items-center justify-center cursor-pointer hover:bg-[#06cf9c] transition-all"
+                    >
+                        {isPlayingPreview ? (
+                            <Square className="w-5 h-5 text-white fill-current" />
+                        ) : (
+                            <div className="w-0 h-0 border-t-[6px] border-t-transparent border-l-[10px] border-l-white border-b-[6px] border-b-transparent ml-1" />
+                        )}
                     </div>
 
                     <div className="flex-1">
-                        <p className="text-white text-sm font-medium">Voice message recorded</p>
+                        <p className="text-white text-sm font-medium">Preview Recording</p>
                         <p className="text-gray-400 text-xs">{formatDuration(duration)}</p>
                     </div>
 
-                    <Button
-                        onClick={handleSend}
-                        className="bg-[#00a884] hover:bg-[#00956f] text-white"
-                        size="icon"
-                    >
-                        <Send className="w-5 h-5" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                        <Button
+                            onClick={handleSend}
+                            className="bg-[#00a884] hover:bg-[#00956f] text-white rounded-full w-10 h-10"
+                            size="icon"
+                        >
+                            <Send className="w-5 h-5" />
+                        </Button>
 
-                    <Button
-                        onClick={handleCancel}
-                        variant="ghost"
-                        size="icon"
-                        className="text-gray-400 hover:text-red-500"
-                    >
-                        <X className="w-5 h-5" />
-                    </Button>
+                        <Button
+                            onClick={handleCancel}
+                            variant="ghost"
+                            size="icon"
+                            className="text-gray-400 hover:text-red-500"
+                        >
+                            <X className="w-5 h-5" />
+                        </Button>
+                    </div>
                 </>
             )}
         </div>

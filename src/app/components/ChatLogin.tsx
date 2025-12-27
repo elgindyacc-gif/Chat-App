@@ -222,7 +222,10 @@ export function ChatLogin({ onLoginSuccess, initialStep = "login", onNavigateToR
                   onNavigateToRegister();
                 } else {
                   setIsSignUp(!isSignUp);
-                  setError(null);
+                  if (pin.length !== 6) {
+                    setError("PIN must be exactly 6 digits");
+                    return;
+                  }
                 }
               }}
               className="text-[#00a884] hover:text-[#00956f] text-sm font-medium transition-colors"

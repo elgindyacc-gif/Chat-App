@@ -3,12 +3,14 @@ import { ChatLogin } from "./components/ChatLogin";
 import { ChatRegister } from "./components/ChatRegister";
 import { ChatList } from "./components/ChatList";
 import { ChatWindow } from "./components/ChatWindow";
+import { CallWindow } from "./components/CallWindow";
 import { NewChat } from "./components/NewChat";
 import { CreateGroup } from "./components/CreateGroup";
 import { RequestList } from "./components/RequestList";
+import { Settings } from "./components/Settings";
 import { SplashScreen } from "./components/SplashScreen"; // Import SplashScreen
 import { supabase } from "../utils/supabase/client";
-import { requestForToken } from "./utils/firebase";
+import { requestForToken, onForegroundMessage } from "./utils/firebase";
 import { projectId, publicAnonKey } from "../utils/supabase/info";
 import { toast } from "sonner";
 import { ArrowLeft, Bell, Check, MessageSquare, RefreshCw } from "lucide-react";
@@ -24,6 +26,7 @@ interface Chat {
   id: string; // conversation_id or group_id
   partnerId: string; // partner_id or group_id
   partnerName: string; // partner_name or group_name
+  partnerAvatar?: string;
   lastMessage: string;
   lastMessageTime: string;
   unreadCount: number;
@@ -39,9 +42,23 @@ interface Message {
   fileName?: string | null;
   timestamp: string;
   isRead: boolean;
+  replyToId?: string | null;
+  reactions?: Record<string, string[]>;
 }
 
-type View = "login" | "register" | "chatList" | "chatWindow" | "newChat" | "requests" | "createGroup";
+interface CallState {
+  id: string; // signaling session id
+  callerId: string;
+  callerName: string;
+  recipientId: string;
+  type: "audio" | "video";
+  status: "ringing" | "connected" | "ended" | "missed";
+  offer?: any; // WebRTC Session Description (offer)
+  answer?: any; // WebRTC Session Description (answer)
+  iceCandidates?: any[]; // ICE candidates
+}
+
+type View = "login" | "register" | "chatList" | "chatWindow" | "newChat" | "requests" | "createGroup" | "settings";
 type LoginStep = "login" | "signup" | "pin_entry";
 
 export default function App() {
@@ -57,6 +74,154 @@ export default function App() {
   const [loginStep, setLoginStep] = useState<LoginStep>("login");
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [activeCall, setActiveCall] = useState<CallState | null>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const totalUnreadRef = useRef(0);
+  const isPollingRef = useRef(false);
+  const consecutiveErrorsRef = useRef(0);
+
+  const [canNotify, setCanNotify] = useState(false);
+  const [micEnabled, setMicEnabled] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    return localStorage.getItem("chat_app_sound_enabled") !== "false";
+  });
+  const [currentSoundId, setCurrentSoundId] = useState(() => {
+    return localStorage.getItem("chat_app_sound_id") || "default";
+  });
+
+  const notificationSounds = [
+    { id: 'whistle', name: 'Whistle Chime', url: 'https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3' },
+    { id: 'bell', name: 'Success Bell', url: 'https://assets.mixkit.co/active_storage/sfx/600/600-preview.mp3' },
+    { id: 'note', name: 'Electronic Note', url: 'https://assets.mixkit.co/active_storage/sfx/2354/2354-preview.mp3' },
+    { id: 'digital', name: 'Digital Alert', url: 'https://assets.mixkit.co/active_storage/sfx/2361/2361-preview.mp3' },
+  ];
+
+  const notificationSoundRef = useRef<HTMLAudioElement | null>(null);
+  const ringtoneSoundRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("chat_app_sound_id", currentSoundId);
+    const selectedSound = notificationSounds.find(s => s.id === currentSoundId) || notificationSounds[0];
+    notificationSoundRef.current = new Audio(selectedSound.url);
+    notificationSoundRef.current.load();
+
+    // Initialize ringtone (standard ringing sound)
+    ringtoneSoundRef.current = new Audio("https://assets.mixkit.co/active_storage/sfx/1359/1359-preview.mp3");
+    ringtoneSoundRef.current.loop = true;
+    ringtoneSoundRef.current.load();
+  }, [currentSoundId]);
+
+  // Ref to hold the latest soundEnabled value to avoid stale closures in subscriptions
+  const soundEnabledRef = useRef(soundEnabled);
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+    localStorage.setItem("chat_app_sound_enabled", String(soundEnabled));
+  }, [soundEnabled]);
+
+  useEffect(() => {
+    // Check initial mic permission
+    if (navigator.permissions && (navigator.permissions as any).query) {
+      (navigator.permissions as any).query({ name: 'microphone' }).then((result: any) => {
+        setMicEnabled(result.state === 'granted');
+        result.onchange = () => setMicEnabled(result.state === 'granted');
+      }).catch(() => { });
+    }
+    // Check notification permission
+    setCanNotify(Notification.permission === 'granted');
+  }, []);
+
+  const enableMic = async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        toast.error("Microphone access requires a secure context (HTTPS or localhost).");
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
+      setMicEnabled(true);
+      toast.success("Microphone access granted!");
+    } catch (err: any) {
+      console.error("Mic error:", err);
+      if (err.name === 'NotAllowedError') {
+        toast.error("Microphone access denied by browser.");
+      } else {
+        toast.error("Microphone access failed: " + err.message);
+      }
+    }
+  };
+
+  // Unlock audio on first user interaction to bypass autoplay policy
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (notificationSoundRef.current) {
+        notificationSoundRef.current.play().then(() => {
+          notificationSoundRef.current?.pause();
+          notificationSoundRef.current!.currentTime = 0;
+        }).catch(() => { });
+      }
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+    };
+
+    document.addEventListener('click', unlockAudio);
+    document.addEventListener('keydown', unlockAudio);
+    document.addEventListener('touchstart', unlockAudio);
+    return () => {
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+    };
+  }, []);
+
+  const enableNotifications = async () => {
+    const token = await requestForToken();
+    if (token && currentUser) {
+      setCanNotify(true);
+      toast.success("Notifications enabled!");
+      // Play a test sound to unlock audio context for Safari
+      if (notificationSoundRef.current) {
+        notificationSoundRef.current.currentTime = 0;
+        notificationSoundRef.current.play().catch(() => { });
+      }
+
+      try {
+        const response = await fetch(
+          `https://${projectId}.supabase.co/functions/v1/make-server-f2fe46ac/fcm-token`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${publicAnonKey}`,
+            },
+            body: JSON.stringify({
+              user_id: currentUser.id,
+              fcm_token: token,
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          // Edge Function not found (404) or other error
+          if (response.status === 404) {
+            console.warn("FCM Edge Function not deployed. In-app notifications will still work.");
+            // Don't show error to user - in-app notifications work fine
+          } else {
+            throw new Error(`FCM registration failed: ${response.status}`);
+          }
+        }
+      } catch (err: any) {
+        // Log error but don't disrupt user experience
+        console.error("Failed to register FCM token:", err);
+        // In-app notifications still work, so we don't need to alert the user
+        // Push notifications when app is closed won't work, but that's acceptable for MVP
+      }
+    } else if (!token) {
+      // User denied notification permission or browser doesn't support it
+      toast.error("Notification permission denied or not supported");
+    }
+  };
 
   // Auth Subscription
   useEffect(() => {
@@ -104,35 +269,7 @@ id,
     })));
   };
 
-  // FCM Handle
-  useEffect(() => {
-    if (currentUser) {
-      const setupFCM = async () => {
-        const token = await requestForToken();
-        if (token) {
-          try {
-            await fetch(
-              `https://${projectId}.supabase.co/functions/v1/make-server-f2fe46ac/fcm-token`,
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${publicAnonKey}`,
-                },
-                body: JSON.stringify({
-                  user_id: currentUser.id,
-                  fcm_token: token,
-                }),
-              }
-            );
-          } catch (err) {
-            console.error("Failed to register FCM token:", err);
-          }
-        }
-      };
-      setupFCM();
-    }
-  }, [currentUser]);
+  // FCM registration removed from here, now handled by enableNotifications explicitly
 
   const fetchProfile = async (userId: string, isPinVerified = false) => {
     const { data, error } = await supabase
@@ -211,7 +348,7 @@ id,
 
     if (convError) {
       console.error("Error loading user conversations:", convError);
-      return;
+      throw convError; // Propagate error for polling to catch
     }
 
     const convIds = userConvs.map(c => c.conversation_id);
@@ -226,15 +363,28 @@ id,
       .select(`
         conversation_id,
         user_id,
-        profiles (id, display_name)
+        profiles (id, display_name, avatar_url)
       `)
       .in("conversation_id", convIds)
       .neq("user_id", userId);
 
     if (partError) {
       console.error("Error loading partners:", partError);
-      return;
+      throw partError; // Propagate error for polling to catch
     }
+
+    // 2.5 Fetch unread counts for 1-1 chats
+    const { data: unreadData } = await supabase
+      .from("messages")
+      .select("conversation_id")
+      .eq("is_read", false)
+      .neq("sender_id", userId)
+      .in("conversation_id", convIds);
+
+    const unreadCountsMap: Record<string, number> = {};
+    unreadData?.forEach((m: any) => {
+      unreadCountsMap[m.conversation_id] = (unreadCountsMap[m.conversation_id] || 0) + 1;
+    });
 
     // Map regular chats
     const regularChats: Chat[] = userConvs.map((item: any) => {
@@ -247,34 +397,60 @@ id,
         id: item.conversation_id,
         partnerId: partner?.user_id || "unknown",
         partnerName: partnerName,
+        partnerAvatar: partner?.profiles && !Array.isArray(partner.profiles)
+          ? (partner.profiles as any).avatar_url
+          : undefined,
         lastMessage: item.conversations?.last_message_text || "",
         lastMessageTime: item.conversations?.last_message_at || "",
-        unreadCount: 0,
+        unreadCount: unreadCountsMap[item.conversation_id] || 0,
         isGroup: false
       };
     });
 
-    // 3. Fetch Groups
-    const { data: userGroups, error: groupError } = await supabase
-      .from("group_members")
-      .select(`
-        group_id,
-        groups (
-          id,
-          name,
-          updated_at
-        )
-      `)
-      .eq("user_id", userId);
+    // 3. Fetch Groups - Re-enabled with Error Handling
+    let userGroups: any[] = [];
+    try {
+      const { data, error: groupError } = await supabase
+        .from("group_members")
+        .select(`
+          group_id,
+          groups (
+            id,
+            name,
+            updated_at
+          )
+        `)
+        .eq("user_id", userId);
+
+      if (!groupError && data) {
+        userGroups = data;
+      } else if (groupError) {
+        console.warn("Group fetch error (likely RLS recursion):", groupError.message);
+        throw groupError; // Propagate error for polling to catch
+      }
+    } catch (e) {
+      console.warn("Unexpected error fetching groups:", e);
+      throw e; // Propagate error for polling to catch
+    }
 
     let groupChats: Chat[] = [];
 
-    if (userGroups && !groupError) {
-      // Fetch details for each group (last message etc) - simplified for now
-      // In a real app, you'd fetch last message from group_messages
-      // For now, let's just fetch existing groups
+    if (userGroups.length > 0) {
+      // Fetch details for each group (last message etc)
+      const groupIds = userGroups.map((g: any) => g.group_id);
 
-      const groupIds = userGroups.map(g => g.group_id);
+      // Fetch unread counts for group chats
+      const { data: groupUnreadData } = await supabase
+        .from("group_messages")
+        .select("group_id")
+        .eq("is_read", false)
+        .neq("sender_id", userId)
+        .in("group_id", groupIds);
+
+      const groupUnreadCountsMap: Record<string, number> = {};
+      groupUnreadData?.forEach((m: any) => {
+        groupUnreadCountsMap[m.group_id] = (groupUnreadCountsMap[m.group_id] || 0) + 1;
+      });
 
       const { data: lastMessages } = await supabase
         .from("group_messages")
@@ -291,21 +467,26 @@ id,
           id: group.id,
           partnerId: group.id, // for groups, partnerId is groupId
           partnerName: group.name,
+          partnerAvatar: undefined, // Groups could have avatars too if implemented
           lastMessage: lastMsg?.text || "No messages yet",
           lastMessageTime: lastMsg?.created_at || group.updated_at,
-          unreadCount: 0,
+          unreadCount: groupUnreadCountsMap[group.id] || 0,
           isGroup: true
         };
       });
     }
 
-    // Combine and sort
+    // Combine and sort alphabetically as requested to prevent "jumping"
     const allChats = [...regularChats, ...groupChats].sort((a, b) => {
-      const dateA = new Date(a.lastMessageTime).getTime();
-      const dateB = new Date(b.lastMessageTime).getTime();
-      return dateB - dateA;
+      return a.partnerName.localeCompare(b.partnerName);
     });
 
+    // Sound logic: If total unread count increased, play notification sound
+    const newTotalUnread = allChats.reduce((sum, c) => sum + c.unreadCount, 0);
+    if (newTotalUnread > totalUnreadRef.current) {
+      playNotificationSound();
+    }
+    totalUnreadRef.current = newTotalUnread;
     setChats(allChats);
   };
 
@@ -335,7 +516,7 @@ id,
 
     if (error) {
       console.error("Error loading messages:", error);
-      return;
+      throw error; // Propagate error for polling to catch
     }
 
     // Again, check if chat changed while we were fetching
@@ -349,7 +530,9 @@ id,
       fileType: m.file_type,
       fileName: m.file_name,
       timestamp: m.created_at,
-      isRead: m.is_read || false
+      isRead: m.is_read || false,
+      replyToId: m.reply_to_id,
+      reactions: m.reactions || {}
     }));
 
     setMessages(prev => {
@@ -379,9 +562,18 @@ id,
 
   const handleSelectChat = (chat: Chat) => {
     setSelectedChat(chat);
+    // Optimistically clear unread count in local state
+    setChats(prev => prev.map(c => c.id === chat.id ? { ...c, unreadCount: 0 } : c));
+
     loadMessages(chat.id, chat.isGroup);
     changeView("chatWindow");
     localStorage.setItem("chat_app_selected_chat", JSON.stringify(chat));
+
+    if (currentUser && !chat.isGroup) {
+      markMessagesAsRead(chat.id, currentUser.id).then(() => {
+        loadChats(currentUser.id);
+      });
+    }
   };
 
   // UUID Generator that works in HTTP/Non-secure contexts
@@ -432,7 +624,8 @@ id,
             text,
             file_url: fileUrl,
             file_type: fileType,
-            file_name: fileName
+            file_name: fileName,
+            reply_to_id: replyToId
           })
           .select()
           .single();
@@ -482,7 +675,7 @@ id,
       senderId: currentUser.id,
       text: "🎤 Voice Message",
       fileUrl: tempUrl,
-      fileType: "audio/webm",
+      fileType: "audio", // Keep as generic audio for UI
       timestamp: new Date().toISOString(),
       isRead: false
     };
@@ -490,12 +683,14 @@ id,
     setMessages(prev => [...prev, tempMessage]);
 
     try {
-      const fileName = `voice_${Date.now()}_${currentUser.id}.webm`;
+      const mimeType = audioBlob.type || 'audio/webm';
+      const extension = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('aac') ? 'aac' : 'webm';
+      const fileName = `voice_${Date.now()}_${currentUser.id}.${extension}`;
 
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('voice-messages')
         .upload(fileName, audioBlob, {
-          contentType: 'audio/webm;codecs=opus',
+          contentType: mimeType,
           cacheControl: '3600',
         });
 
@@ -541,7 +736,7 @@ id,
     } catch (error: any) {
       console.error("Error sending voice message:", error);
       setMessages(prev => prev.filter(m => m.id !== tempId));
-      toast.error("Failed to send voice message");
+      toast.error(`Voice send failed: ${error.message || "Unknown error"}`);
       URL.revokeObjectURL(tempUrl);
     }
   };
@@ -577,23 +772,79 @@ id,
     }
   };
 
+  const handleReact = async (messageId: string, emoji: string) => {
+    if (!currentUser) return;
+
+    const message = messages.find(m => m.id === messageId);
+    if (!message) return;
+
+    const currentReactions = { ...(message.reactions || {}) };
+    const hadThisEmoji = (currentReactions[emoji] || []).includes(currentUser.id);
+
+    // Limit to one reaction per user: Remove user from any other emoji category
+    Object.keys(currentReactions).forEach(key => {
+      currentReactions[key] = (currentReactions[key] || []).filter(id => id !== currentUser.id);
+      if (currentReactions[key].length === 0) delete currentReactions[key];
+    });
+
+    if (!hadThisEmoji) {
+      // Add new reaction
+      currentReactions[emoji] = [...(currentReactions[emoji] || []), currentUser.id];
+    }
+
+    // Optimistic Update
+    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, reactions: currentReactions } : m));
+
+    try {
+      const table = selectedChat?.isGroup ? "group_messages" : "messages";
+      const { error } = await supabase
+        .from(table)
+        .update({ reactions: currentReactions })
+        .eq("id", messageId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error("Error reacting:", error);
+      // Revert on error
+      if (selectedChat) loadMessages(selectedChat.id, selectedChat.isGroup);
+    }
+  };
+
   // Refs to keep track of state in callbacks without re-subscribing
   const selectedChatRef = useRef<Chat | null>(null);
+  const activeCallRef = useRef<CallState | null>(null);
   const currentUserRef = useRef<UserProfile | null>(null);
+  const chatChannelRef = useRef<any>(null);
 
   useEffect(() => {
     selectedChatRef.current = selectedChat;
-  }, [selectedChat]);
+    activeCallRef.current = activeCall;
+  }, [selectedChat, activeCall]);
 
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
+
+  const playNotificationSound = useCallback(() => {
+    // Uses refs for stable execution
+    if (soundEnabledRef.current && notificationSoundRef.current) {
+      notificationSoundRef.current.currentTime = 0;
+      notificationSoundRef.current.play()
+        .catch(e => {
+          console.log("Sound play failed:", e);
+          if (e.name === "NotAllowedError") {
+            // Optional: toast.info("Click anywhere to enable notification sounds");
+          }
+        });
+    }
+  }, []); // Truly stable callback
 
   // Real-time Subscriptions (Messages, Conversations, Presence, Typing)
   useEffect(() => {
     if (!currentUser) return;
 
     const channel = supabase.channel("chat-realtime");
+    chatChannelRef.current = channel;
 
     channel
       .on(
@@ -615,11 +866,17 @@ id,
                 fileType: newMessage.file_type,
                 fileName: newMessage.file_name,
                 timestamp: newMessage.created_at,
-                isRead: newMessage.is_read
+                isRead: newMessage.is_read || false,
+                replyToId: newMessage.reply_to_id,
+                reactions: newMessage.reactions || {}
               }];
             });
             if (me) markMessagesAsRead(currentChat.id, me.id);
+          } else if (me && newMessage.sender_id !== me.id) {
+            // Play sound ONLY for background chats
+            playNotificationSound();
           }
+          // Refresh chat list to update last message and unread count
           if (me) loadChats(me.id);
         }
       )
@@ -631,7 +888,12 @@ id,
           const currentChat = selectedChatRef.current;
           if (currentChat && updatedMsg.conversation_id === currentChat.id) {
             setMessages(prev => prev.map(m =>
-              m.id === updatedMsg.id ? { ...m, isRead: updatedMsg.is_read } : m
+              m.id === updatedMsg.id ? {
+                ...m,
+                isRead: updatedMsg.is_read,
+                text: updatedMsg.text, // Handle edits/deletions
+                reactions: updatedMsg.reactions || {}
+              } : m
             ));
           }
         }
@@ -647,11 +909,64 @@ id,
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "conversation_participants" },
         (payload) => {
-          if (currentUserRef.current && payload.new.user_id === currentUserRef.current.id) {
-            loadChats(currentUserRef.current.id);
+          if (currentUserRef.current && (payload.new.sender_id === currentUserRef.current.id || payload.new.receiver_id === currentUserRef.current.id)) {
+            fetchRequests(currentUserRef.current.id);
           }
         }
       )
+      .on("broadcast", { event: "call-offer" }, ({ payload }) => {
+        const me = currentUserRef.current;
+        if (me && payload.recipientId === me.id) {
+          // Check if already in a call
+          if (activeCallRef.current) {
+            // Send busy signal (optional, but good UX)
+            return;
+          }
+
+          setActiveCall({
+            id: payload.id,
+            callerId: payload.callerId,
+            callerName: payload.callerName,
+            recipientId: me.id,
+            type: payload.type,
+            status: "ringing",
+            offer: payload.offer,
+            iceCandidates: []
+          });
+
+          // Play ringtone
+          if (soundEnabledRef.current && ringtoneSoundRef.current) {
+            ringtoneSoundRef.current.play().catch(e => console.error("Ringtone failed:", e));
+          }
+        }
+      })
+      .on("broadcast", { event: "call-answer" }, ({ payload }) => {
+        const me = currentUserRef.current;
+        if (me && payload.recipientId === me.id && activeCallRef.current?.id === payload.id) {
+          setActiveCall(prev => prev ? { ...prev, answer: payload.answer, status: "connected" } : null);
+        }
+      })
+      .on("broadcast", { event: "ice-candidate" }, ({ payload }) => {
+        const me = currentUserRef.current;
+        if (me && payload.recipientId === me.id && activeCallRef.current?.id === payload.id) {
+          setActiveCall(prev => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              iceCandidates: [...(prev.iceCandidates || []), payload.candidate]
+            };
+          });
+        }
+      })
+      .on("broadcast", { event: "call-ended" }, ({ payload }) => {
+        if (activeCallRef.current && activeCallRef.current.id === payload.id) {
+          setActiveCall(null);
+          if (ringtoneSoundRef.current) {
+            ringtoneSoundRef.current.pause();
+            ringtoneSoundRef.current.currentTime = 0;
+          }
+        }
+      })
       .on("presence", { event: "sync" }, () => {
         const state = channel.presenceState();
         const onlineIds = new Set<string>();
@@ -707,14 +1022,36 @@ id,
               fileType: newMsg.file_type,
               fileName: newMsg.file_name,
               timestamp: newMsg.created_at,
-              isRead: false
+              isRead: false,
+              replyToId: newMsg.reply_to_id,
+              reactions: newMsg.reactions || {}
             };
             setMessages(prev => {
               if (prev.some(m => m.id === newMsg.id)) return prev;
               return [...prev, formattedMsg];
             });
+          } else if (me && newMsg.sender_id !== me.id) {
+            // Play sound ONLY if not in this group chat
+            playNotificationSound();
           }
           if (me) loadChats(me.id);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "group_messages" },
+        (payload) => {
+          const updatedMsg = payload.new as any;
+          const currentChat = selectedChatRef.current;
+          if (currentChat && currentChat.isGroup && updatedMsg.group_id === currentChat.id) {
+            setMessages(prev => prev.map(m =>
+              m.id === updatedMsg.id ? {
+                ...m,
+                text: updatedMsg.text,
+                reactions: updatedMsg.reactions || {}
+              } : m
+            ));
+          }
         }
       )
       .on(
@@ -735,39 +1072,58 @@ id,
         }
       });
 
+    // Handle Firebase Foreground Notifications
+    const unsubscribeFCM = onForegroundMessage((payload: any) => {
+      console.log("FCM Foreground Message:", payload);
+      playNotificationSound();
+    });
+
     return () => {
-      supabase.removeChannel(channel);
+      channel.unsubscribe();
+      unsubscribeFCM();
     };
-  }, [currentUser]); // Now only depends on currentUser
+  }, [currentUser, playNotificationSound]); // Explicitly depend on playNotificationSound
 
   // Polling Fallback: Fetch latest data every 1 second as requested
   useEffect(() => {
     if (!currentUser) return;
 
-    const pollInterval = setInterval(() => {
-      // 1. Refresh chat list
-      loadChats(currentUser.id);
+    const pollInterval = setInterval(async () => {
+      if (isPollingRef.current) return;
+      isPollingRef.current = true;
 
-      // 2. Refresh current message list if in a chat
-      const currentChat = selectedChatRef.current;
-      if (currentChat) {
-        loadMessages(currentChat.id, currentChat.isGroup);
+      try {
+        // 1. Refresh chat list
+        await loadChats(currentUser.id);
+        consecutiveErrorsRef.current = 0; // Reset on success
+
+        // 2. Refresh current message list if in a chat
+        const currentChat = selectedChatRef.current;
+        if (currentChat) {
+          await loadMessages(currentChat.id, currentChat.isGroup);
+        }
+
+        // 3. Refresh requests
+        await fetchRequests(currentUser.id);
+      } catch (err) {
+        consecutiveErrorsRef.current++;
+        console.error("Polling error:", err);
+      } finally {
+        isPollingRef.current = false;
       }
-
-      // 3. Refresh requests
-      fetchRequests(currentUser.id);
-    }, 1000); // Poll every 1 second for instant updates
-
+    }, 1000); // Poll every 1 second
     return () => clearInterval(pollInterval);
   }, [currentUser]);
 
   const handleSendTyping = (isTyping: boolean) => {
     if (!currentUser || !selectedChat) return;
-    supabase.channel("chat-realtime").send({
-      type: "broadcast",
-      event: "typing",
-      payload: { user_id: currentUser.id, conversation_id: selectedChat.id, is_typing: isTyping }
-    });
+    if (chatChannelRef.current) {
+      chatChannelRef.current.send({
+        type: "broadcast",
+        event: "typing",
+        payload: { user_id: currentUser.id, conversation_id: selectedChat.id, is_typing: isTyping }
+      });
+    }
   };
 
   const changeView = (newView: View) => {
@@ -906,9 +1262,60 @@ id,
     }
   };
 
+  const sendSignalingMessage = useCallback((recipientId: string, event: string, payload: any) => {
+    if (chatChannelRef.current) {
+      chatChannelRef.current.send({
+        type: "broadcast",
+        event: event,
+        payload: { ...payload, recipientId }
+      });
+    } else {
+      const tempChannel = supabase.channel("chat-realtime");
+      tempChannel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          tempChannel.send({
+            type: "broadcast",
+            event: event,
+            payload: { ...payload, recipientId }
+          });
+        }
+      });
+    }
+  }, []);
+
+  const handleStartCall = async (recipientId: string, recipientName: string, type: "audio" | "video") => {
+    if (!currentUser) return;
+
+    const callId = Math.random().toString(36).substring(7);
+    const newCall: CallState = {
+      id: callId,
+      callerId: currentUser.id,
+      callerName: currentUser.name || currentUser.username,
+      recipientId: recipientId,
+      type: type,
+      status: "ringing"
+    };
+
+    setActiveCall(newCall);
+  };
+
+  const handleEndCall = useCallback(() => {
+    if (activeCallRef.current) {
+      sendSignalingMessage(activeCallRef.current.recipientId, "call-ended", { id: activeCallRef.current.id });
+      if (currentUserRef.current?.id === activeCallRef.current.recipientId) {
+        sendSignalingMessage(activeCallRef.current.callerId, "call-ended", { id: activeCallRef.current.id });
+      }
+    }
+    setActiveCall(null);
+    if (ringtoneSoundRef.current) {
+      ringtoneSoundRef.current.pause();
+      ringtoneSoundRef.current.currentTime = 0;
+    }
+  }, [sendSignalingMessage]);
+
   if (errorStatus) {
     return (
-      <div className="w-full h-screen bg-[#111b21] flex flex-col items-center justify-center text-red-500 p-6 text-center">
+      <div className="w-full h-[100dvh] bg-[#111b21] flex flex-col items-center justify-center text-red-500 p-6 text-center">
         <p className="text-xl font-bold mb-4">{errorStatus}</p>
         <button
           onClick={() => window.location.reload()}
@@ -926,14 +1333,14 @@ id,
 
   if (isLoading) {
     return (
-      <div className="w-full h-screen bg-[#111b21] flex flex-col items-center justify-center">
+      <div className="w-full h-[100dvh] bg-[#111b21] flex flex-col items-center justify-center">
         <SplashScreen onFinish={() => { }} />
       </div>
     );
   }
 
   return (
-    <div className="w-full h-screen bg-[#111b21] overflow-hidden">
+    <div className="w-full h-[100dvh] bg-[#111b21] overflow-hidden">
       {showSplash ? (
         <SplashScreen onFinish={handleSplashFinish} />
       ) : (
@@ -941,7 +1348,7 @@ id,
           {currentUser ? (
             <div className="flex h-full w-full overflow-hidden">
               {/* Sidebar: Chat List */}
-              <div className={`${view === "chatWindow" ? "hidden md:flex" : "flex"} w-full md:w-[400px] flex-shrink-0 border-r border-gray-800`}>
+              <div className={`${view !== "chatList" ? "hidden md:flex" : "flex"} w-full md:w-[400px] flex-shrink-0 border-r border-gray-800`}>
                 <ChatList
                   chats={chats}
                   currentUser={currentUser}
@@ -956,16 +1363,21 @@ id,
                   onNewChat={() => changeView("newChat")}
                   onCreateGroup={() => changeView("createGroup")}
                   onLogout={handleLogout}
+                  typingUsers={typingUsers}
+                  onEnableNotifications={enableNotifications}
+                  notificationsEnabled={canNotify}
+                  onSettings={() => changeView("settings")}
                 />
               </div>
 
-              {/* Main Content: Chat Window or Placeholder */}
-              <div className={`flex-1 flex flex-col min-w-0 ${view === "chatWindow" ? "flex" : "hidden md:flex"}`}>
+              {/* Main Content: Chat Window, New Chat, Create Group, etc. */}
+              <div className={`flex-1 flex flex-col min-w-0 ${view !== "chatList" ? "flex" : "hidden md:flex"}`}>
                 {view === "chatWindow" && selectedChat ? (
                   <ChatWindow
                     currentUserId={currentUser.id}
                     partnerId={selectedChat.partnerId}
                     partnerName={selectedChat.partnerName}
+                    partnerAvatar={selectedChat.partnerAvatar}
                     messages={messages}
                     isPartnerOnline={onlineUsers.has(selectedChat.partnerId)}
                     isPartnerTyping={typingUsers[selectedChat.partnerId] || false}
@@ -975,7 +1387,9 @@ id,
                     onDeleteMessage={handleDeleteMessage}
                     onTyping={handleSendTyping}
                     onRefresh={() => loadMessages(selectedChat.id, selectedChat.isGroup)}
+                    onReact={handleReact}
                     isGroup={selectedChat.isGroup}
+                    onStartCall={(type) => handleStartCall(selectedChat.partnerId, selectedChat.partnerName, type)}
                   />
                 ) : view === "requests" && currentUser ? (
                   <div className="flex-1 flex flex-col">
@@ -995,6 +1409,29 @@ id,
                   <NewChat
                     onBack={() => changeView("chatList")}
                     currentUserId={currentUser.id}
+                  />
+                ) : view === "settings" && currentUser ? (
+                  <Settings
+                    user={currentUser}
+                    onBack={() => changeView("chatList")}
+                    onUpdateProfile={(updatedUser) => setCurrentUser(updatedUser)}
+                    onLogout={handleLogout}
+                    notificationsEnabled={canNotify}
+                    onEnableNotifications={enableNotifications}
+                    micEnabled={micEnabled}
+                    onEnableMic={enableMic}
+                    soundEnabled={soundEnabled}
+                    onToggleSound={(enabled) => {
+                      setSoundEnabled(enabled);
+                      localStorage.setItem("chat_app_sound_enabled", String(enabled));
+                      toast.success(`Sound ${enabled ? 'enabled' : 'disabled'}`);
+                    }}
+                    currentSoundId={currentSoundId}
+                    notificationSounds={notificationSounds}
+                    onSelectSound={(id: string) => {
+                      setCurrentSoundId(id);
+                    }}
+                    onTestSound={playNotificationSound}
                   />
                 ) : view === "createGroup" ? (
                   <CreateGroup
@@ -1041,6 +1478,49 @@ id,
           )}
         </div>
       )}
+
+      {activeCall && currentUser && (
+        <CallWindow
+          callId={activeCall.id}
+          callerId={activeCall.callerId}
+          callerName={activeCall.callerName}
+          recipientId={activeCall.recipientId}
+          isIncoming={activeCall.recipientId === currentUser.id}
+          type={activeCall.type}
+          onEndCall={handleEndCall}
+          currentUserId={currentUser.id}
+          sendSignaling={sendSignalingMessage}
+          incomingOffer={activeCall.offer}
+          remoteAnswer={activeCall.answer}
+          remoteIceCandidates={activeCall.iceCandidates}
+        />
+      )}
+
+      {/* iOS Install Prompt Banner */}
+      {(() => {
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone;
+        if (isIOS && !isStandalone) {
+          return (
+            <div className="fixed bottom-0 left-0 w-full p-4 z-[9999]">
+              <div className="bg-[#1f2c33] border border-[#00a884]/30 rounded-2xl p-4 shadow-2xl backdrop-blur-xl">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 bg-[#00a884] rounded-xl flex items-center justify-center flex-shrink-0">
+                    <img src="icon.png" className="w-6 h-6 object-contain" alt="App Icon" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-white font-semibold text-xs mb-1">تثبيت التطبيق على آيفون 🍎</h3>
+                    <p className="text-gray-400 text-[10px] leading-relaxed">
+                      لتفعيل الإشعارات وتجربة أفضل: اضغط على <span className="inline-block px-1 bg-white/10 rounded">Share</span> ثم <span className="inline-block px-1 bg-white/10 rounded">Add to Home Screen</span>.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      })()}
     </div>
   );
 }

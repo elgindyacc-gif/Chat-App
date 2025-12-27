@@ -3,7 +3,7 @@ import { getMessaging, getToken, onMessage } from "firebase/messaging";
 
 // Replace these with actual values from Firebase Console
 const firebaseConfig = {
-    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    apiKey: (import.meta as any).env.VITE_FIREBASE_API_KEY,
     authDomain: "whats-app-ba228.firebaseapp.com",
     projectId: "whats-app-ba228",
     storageBucket: "whats-app-ba228.firebasestorage.app",
@@ -33,7 +33,10 @@ export const requestForToken = async () => {
         if (!messaging) return null;
 
         const currentToken = await getToken(messaging, {
-            vapidKey: "BHOxCY8sGByUx_Ck0R2X7O_DkEChn_TmXM3S2CWWzT-0v-mWlaOScvQryAJk9aT3kJD6iYhvLPwWExg5U9FPZxI"
+            vapidKey: "BHOxCY8sGByUx_Ck0R2X7O_DkEChn_TmXM3S2CWWzT-0v-mWlaOScvQryAJk9aT3kJD6iYhvLPwWExg5U9FPZxI",
+            serviceWorkerRegistration: await navigator.serviceWorker.register('./firebase-messaging-sw.js', {
+                scope: './firebase-cloud-messaging-push-scope'
+            })
         });
         if (currentToken) {
             console.log("FCM Token:", currentToken);
@@ -48,13 +51,14 @@ export const requestForToken = async () => {
     }
 };
 
-export const onMessageListener = async () => {
-    const messaging = await getFirebaseMessaging();
-    if (!messaging) return null;
-
-    return new Promise((resolve) => {
-        onMessage(messaging, (payload) => {
-            resolve(payload);
-        });
+export const onForegroundMessage = (callback: (payload: any) => void) => {
+    let unsubscribe = () => { };
+    getFirebaseMessaging().then(messaging => {
+        if (messaging) {
+            unsubscribe = onMessage(messaging, (payload) => {
+                callback(payload);
+            });
+        }
     });
+    return () => unsubscribe();
 };
