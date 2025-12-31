@@ -2,11 +2,17 @@
   "name": "Chat App",
   "short_name": "ChatApp",
   "id": "/Chat-App/",
-  "description": "A premium real-time chat application.",
+  "description": "A premium real-time chat application securely linked to your device.",
   "start_url": "/Chat-App/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#111b21",
-  "theme_color": "#00a884",
+  "theme_color": "#111b21",
+  "categories": [
+    "social",
+    "communication",
+    "utilities"
+  ],
   "icons": [
     {
       "src": "icon.png",
@@ -20,5 +26,10 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "screenshots": [],
+  "shortcuts": [],
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false
 }
